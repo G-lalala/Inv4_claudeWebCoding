@@ -110,24 +110,34 @@
 
 ### LocalStack セットアップ（方式2の場合）
 
-#### Docker Compose設定
-```yaml
-services:
-  localstack:
-    image: localstack/localstack:latest
-    ports:
-      - "4566:4566"
-    environment:
-      - SERVICES=s3
-      - DEFAULT_REGION=us-east-1
-      - DATA_DIR=/tmp/localstack/data
-    volumes:
-      - ./localstack:/tmp/localstack
+**詳細は `docs/LOCALSTACK_SETUP.md` を参照してください。**
+
+#### 概要
+- `docker-compose.yml`にLocalStackサービスを追加済み
+- 初期化スクリプトで自動的にS3バケット作成、CORS設定、ライフサイクルルール設定
+- `localstack/init/setup-s3.sh`がコンテナ起動時に自動実行
+
+#### 起動コマンド
+```bash
+docker-compose up -d localstack
 ```
 
-#### 初期化スクリプト
-- バケット作成: `aws --endpoint-url=http://localhost:4566 s3 mb s3://slideshow-uploads`
-- CORS設定: アップロード許可のためのCORS設定
+#### 動作確認
+```bash
+# ヘルスチェック
+curl http://localhost:4566/_localstack/health
+
+# バケット確認
+docker-compose exec app sh -c "aws --endpoint-url=http://localstack:4566 s3 ls"
+```
+
+#### 重要な考慮事項
+- **Docker Socketマウント**: 開発環境のみ（セキュリティリスクあり）
+- **ポート4566**: ホストマシンで空いている必要あり
+- **データ永続化**: `localstack/data/`に保存（.gitignore対象）
+- **Windows環境**: Docker Socketパスやシェルスクリプトの改行コードに注意
+
+詳細は `docs/LOCALSTACK_SETUP.md` を参照してください。
 
 ## エラーハンドリング
 

@@ -1,0 +1,5 @@
+# シェルスクリプトは必ずLF改行にする（Windows環境対応）
+*.sh text eol=lf
+
+# LocalStack初期化スクリプト
+localstack/init/*.sh text eol=lf
