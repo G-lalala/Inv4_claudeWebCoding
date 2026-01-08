@@ -3,6 +3,66 @@
 ## 概要
 生成されたスライドショー動画をMP4形式でエンコードし、ユーザーに自動ダウンロードさせる機能。ダウンロード完了後、サーバー上の一時ファイルを即座に削除する。
 
+## 動画ダウンロードフロー
+
+### 全体フロー（シーケンス図）
+
+```mermaid
+sequenceDiagram
+    actor User as ユーザー
+    participant Browser as ブラウザ
+    participant API as API Server
+    participant FFmpeg as FFmpeg
+    participant Storage as ストレージ
+
+    User->>Browser: 動画生成ボタンをクリック
+    Browser->>API: POST /api/generate (session-id)
+
+    Note over API,FFmpeg: 動画生成処理
+    API->>Storage: 画像ファイル取得
+    API->>FFmpeg: スライドショー生成開始
+    FFmpeg-->>API: 進捗情報
+    API-->>Browser: 進捗通知（WebSocket/ポーリング）
+    FFmpeg->>Storage: 動画ファイル保存 (/tmp/videos/{session-id}/output.mp4)
+    FFmpeg-->>API: 生成完了
+
+    API-->>Browser: 生成完了レスポンス
+
+    Note over Browser,API: ダウンロード処理
+    Browser->>API: GET /api/download/{session-id}
+    API->>Storage: 動画ファイル存在確認
+    API->>Browser: ストリーミング配信（Content-Disposition: attachment）
+    Browser->>User: 動画ファイルダウンロード開始
+
+    Note over Browser,Storage: クリーンアップ処理
+    Browser->>Browser: 5秒待機
+    Browser->>API: DELETE /api/cleanup/{session-id}
+    API->>Storage: 動画ファイル削除 (/tmp/videos/{session-id}/)
+    API->>Storage: 画像ファイル削除 (/tmp/uploads/{session-id}/)
+    API-->>Browser: { success: true }
+
+    Browser->>User: 完了画面表示
+```
+
+### 詳細フロー説明
+
+#### 1. 動画生成フェーズ
+1. ユーザーが「動画を生成」ボタンをクリック
+2. ブラウザが `/api/generate` にリクエスト送信
+3. サーバーがFFmpegを使用してスライドショー動画を生成
+4. 進捗情報をブラウザに通知（WebSocketまたはポーリング）
+5. 生成完了後、動画ファイルを `/tmp/videos/{session-id}/output.mp4` に保存
+
+#### 2. ダウンロードフェーズ
+6. 生成完了レスポンスを受け取り、ブラウザが `/api/download/{session-id}` にリクエスト
+7. サーバーがストリーミングで動画ファイルを配信
+8. ブラウザが `Content-Disposition: attachment` ヘッダーを受け取り、ダウンロード開始
+
+#### 3. クリーンアップフェーズ
+9. ダウンロード開始から5秒後、ブラウザが `/api/cleanup/{session-id}` にリクエスト
+10. サーバーが動画ファイルと画像ファイルを削除
+11. ブラウザに完了画面を表示
+
 ## 要件
 
 ### 動画フォーマット

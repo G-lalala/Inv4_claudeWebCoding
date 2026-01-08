@@ -46,30 +46,88 @@
 
 ## 技術仕様
 
+### アップロード方式の選択
+
+#### 方式1: 直接アップロード（シンプル）
+- フロントエンドから圧縮済み画像をサーバーに送信
+- サーバーがローカルディスク（/tmp）に保存
+- **メリット**: 実装がシンプル、インフラ要件が少ない
+- **デメリット**: 大量ファイル時にサーバー負荷が高い、スケーラビリティに課題
+
+#### 方式2: 署名付きURL + S3/LocalStack（推奨）
+- フロントエンドが署名付きURLをサーバーから取得
+- 圧縮済み画像をS3（開発環境ではLocalStack）に直接アップロード
+- **メリット**: サーバー負荷軽減、スケーラブル、本番環境と同等の構成
+- **デメリット**: インフラ設定が必要（LocalStackのセットアップ）
+
+**推奨**: 方式2（署名付きURL + S3/LocalStack）を採用
+
 ### フロントエンド
 
 #### 使用ライブラリ
 - **画像圧縮**: `browser-image-compression` または `compressorjs`
 - **HEIC変換**: `heic2any`
 - **ドラッグ&ドロップ**: `react-beautiful-dnd` または HTML5 Drag and Drop API
+- **AWS SDK**: `@aws-sdk/client-s3` または `@aws-sdk/s3-request-presigner`（方式2の場合）
 
 #### 実装ファイル
 - `app/components/ImageUploader.tsx`: 画像選択・アップロード UI
 - `app/components/ImagePreview.tsx`: 確認画面 UI
 - `app/utils/imageCompression.ts`: 画像圧縮ロジック
 - `app/utils/imageValidation.ts`: バリデーションロジック
+- `app/utils/s3Upload.ts`: S3署名付きURLアップロード処理（方式2）
 
 ### バックエンド
 
 #### API エンドポイント
+
+**方式1（直接アップロード）の場合**:
 - `POST /api/upload`: 圧縮済み画像を受け取り、一時ディレクトリに保存
   - リクエスト: multipart/form-data
-  - レスポンス: アップロード成功時は画像ID配列を返す
+  - レスポンス: `{ sessionId: string, imageIds: string[] }`
 
-#### 一時ストレージ
+**方式2（署名付きURL）の場合**（推奨）:
+- `POST /api/upload/presigned-urls`: 署名付きURLを生成
+  - リクエスト: `{ count: number, fileNames: string[] }`
+  - レスポンス: `{ sessionId: string, uploadUrls: Array<{ id: string, url: string, key: string }> }`
+- `POST /api/upload/complete`: アップロード完了を通知
+  - リクエスト: `{ sessionId: string, imageKeys: string[] }`
+  - レスポンス: `{ success: true }`
+
+#### ストレージ
+
+**方式1の場合**:
 - **保存先**: `/tmp/uploads/{session-id}/`
 - **ファイル名**: `{uuid}.jpg`
 - **メタデータ**: `metadata.json`（画像順序、元のファイル名等）
+
+**方式2の場合**（推奨）:
+- **ストレージ**: S3バケット（開発: LocalStack、本番: AWS S3）
+- **バケット名**: `slideshow-uploads`
+- **キー形式**: `{session-id}/{uuid}.jpg`
+- **メタデータ**: S3オブジェクトメタデータまたは別途DynamoDB/JSONファイル
+- **有効期限**: 署名付きURLは5分、アップロード済みファイルは24時間後に削除
+
+### LocalStack セットアップ（方式2の場合）
+
+#### Docker Compose設定
+```yaml
+services:
+  localstack:
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3
+      - DEFAULT_REGION=us-east-1
+      - DATA_DIR=/tmp/localstack/data
+    volumes:
+      - ./localstack:/tmp/localstack
+```
+
+#### 初期化スクリプト
+- バケット作成: `aws --endpoint-url=http://localhost:4566 s3 mb s3://slideshow-uploads`
+- CORS設定: アップロード許可のためのCORS設定
 
 ## エラーハンドリング
 
@@ -83,15 +141,49 @@
 - アップロード失敗: 500エラー、リトライ可能メッセージ
 - ディスク容量不足: 503エラー、一時的なサービス停止通知
 
+## アップロードフロー比較
+
+### 方式1: 直接アップロード
+```
+1. ユーザーが画像を選択
+2. フロントエンドで圧縮処理
+3. multipart/form-dataでサーバーに送信
+4. サーバーが/tmpに保存
+5. レスポンス返却
+```
+
+### 方式2: 署名付きURL（推奨）
+```
+1. ユーザーが画像を選択
+2. フロントエンドで圧縮処理
+3. サーバーに署名付きURL発行をリクエスト（POST /api/upload/presigned-urls）
+4. サーバーがS3署名付きURLを生成して返却
+5. フロントエンドが各画像をS3に直接アップロード（PUT）
+6. 全アップロード完了後、サーバーに完了通知（POST /api/upload/complete）
+7. サーバーがメタデータを保存
+```
+
 ## 制約事項
 - ブラウザによってはHEIC形式の変換に時間がかかる場合がある
 - 大量の画像（30枚以上）をアップロードする場合、圧縮処理に数秒かかる
 - オフライン環境では動作しない
+- 方式2の場合、LocalStackまたはAWS S3の設定が必要
 
 ## セキュリティ
+
+### 共通
 - ファイル拡張子の偽装を防ぐため、MIMEタイプを厳密にチェック
-- アップロードされたファイルはサーバーサイドでも再バリデーション
 - セッションIDはUUIDv4を使用してパス推測を防止
+
+### 方式1の場合
+- アップロードされたファイルはサーバーサイドでも再バリデーション
+- ファイルサイズ制限を厳格に設定
+
+### 方式2の場合（推奨）
+- 署名付きURLの有効期限を短く設定（5分）
+- CORS設定で許可されたオリジンのみアップロード可能
+- S3バケットポリシーで適切なアクセス制御
+- アップロード完了前のファイルは定期的にクリーンアップ
 
 ---
 
